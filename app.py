@@ -1,4 +1,6 @@
 import os
+import math
+import heapq
 import requests
 import numpy as np
 from typing import Optional
@@ -44,13 +46,6 @@ class GenerateRequest(BaseModel):
     fixacoes: list[FixacaoInput] = Field(default_factory=list)
 
 
-def filter_double_options(double_probs: dict, tipo_dupla: str) -> dict:
-    if tipo_dupla == "evitar_12":
-        filtered = {k: v for k, v in double_probs.items() if k in {"1X", "X2"}}
-        return filtered if filtered else double_probs
-    return double_probs
-
-
 def validate_env():
     if not API_KEY:
         raise RuntimeError("API_KEY não configurada")
@@ -65,6 +60,13 @@ def normalize_probs(p1: float, px: float, p2: float):
 
 def build_game_label(home: str, away: str) -> str:
     return f"{home} x {away}"
+
+
+def filter_double_options(double_probs: dict[str, float], tipo_dupla: str) -> dict[str, float]:
+    if tipo_dupla == "evitar_12":
+        filtered = {k: v for k, v in double_probs.items() if k in {"1X", "X2"}}
+        return filtered if filtered else double_probs
+    return double_probs
 
 
 def get_games():
@@ -231,94 +233,6 @@ def normalize_fixed_choice(escolha, home, away):
     return None
 
 
-def get_allowed_double_games(infos, modo):
-    if modo == "misto":
-        limit = MAX_DOUBLE_CHANCES_MISTO
-    elif modo == "protecao":
-        limit = MAX_DOUBLE_CHANCES_PROTECAO
-    else:
-        return set()
-
-    ranked = sorted(
-        enumerate(infos),
-        key=lambda x: x[1]["protection_score"],
-        reverse=True,
-    )
-
-    return {idx for idx, _ in ranked[:limit]}
-
-
-def generate_base_ticket(infos, modo):
-    modo = modo.lower().strip()
-    ticket = []
-
-    allowed_double_games = get_allowed_double_games(infos, modo)
-
-    for idx, info in enumerate(infos):
-        if modo == "seco":
-            ticket.append(info["best_single"])
-            continue
-
-        if idx in allowed_double_games and info["chosen_type"] == "double":
-            ticket.append(info["best_double"])
-        else:
-            ticket.append(info["best_single"])
-
-    return ticket
-
-
-def diversify_ticket(base_ticket, infos, ticket_index, modo):
-    if ticket_index == 0:
-        return list(base_ticket)
-
-    diversified = []
-
-    for idx, (opt, prob) in enumerate(base_ticket):
-        info = infos[idx]
-
-        if modo == "seco":
-            candidates = info["ranked_singles"]
-        elif opt in {"1X", "X2", "12"}:
-            candidates = info["ranked_doubles"]
-        else:
-            candidates = info["ranked_singles"]
-
-        if len(candidates) == 1:
-            diversified.append((opt, prob))
-            continue
-
-        alt_idx = ticket_index % len(candidates)
-        alt_opt, alt_prob = candidates[alt_idx]
-
-        if opt in {"1X", "X2", "12"} and alt_prob < 0.55:
-            alt_opt, alt_prob = candidates[0]
-
-        if opt in {"1", "X", "2"} and alt_prob < 0.20:
-            alt_opt, alt_prob = candidates[0]
-
-        diversified.append((alt_opt, alt_prob))
-
-    return diversified
-
-
-def apply_fixacoes(ticket, games, infos, fix_map):
-    out = []
-
-    for i, (opt, prob) in enumerate(ticket):
-        label = games[i]["label"]
-
-        if label in fix_map:
-            forced = normalize_fixed_choice(fix_map[label], games[i]["home"], games[i]["away"])
-            if forced is not None:
-                prob = infos[i]["single_probs"][forced]
-                out.append((forced, prob))
-                continue
-
-        out.append((opt, prob))
-
-    return out
-
-
 def symbol_to_text(opt, home, away):
     if opt == "1":
         return home
@@ -356,6 +270,143 @@ def format_ticket(games, ticket):
         )
 
     return out
+
+
+def get_allowed_double_games(infos, modo):
+    if modo == "misto":
+        limit = MAX_DOUBLE_CHANCES_MISTO
+    elif modo == "protecao":
+        limit = MAX_DOUBLE_CHANCES_PROTECAO
+    else:
+        return set()
+
+    ranked = sorted(
+        enumerate(infos),
+        key=lambda x: x[1]["protection_score"],
+        reverse=True,
+    )
+
+    return {idx for idx, _ in ranked[:limit]}
+
+
+def unique_candidates(candidates):
+    seen = set()
+    out = []
+    for opt, prob in candidates:
+        if opt not in seen:
+            seen.add(opt)
+            out.append((opt, float(prob)))
+    return out
+
+
+def build_candidate_lists(games, infos, modo, fix_map):
+    allowed_double_games = get_allowed_double_games(infos, modo)
+    candidate_lists = []
+    fixacoes_aplicadas = []
+
+    for idx, game in enumerate(games):
+        label = game["label"]
+        info = infos[idx]
+
+        # fixação manual sempre tem prioridade
+        if label in fix_map:
+            forced = normalize_fixed_choice(fix_map[label], game["home"], game["away"])
+            if forced is not None:
+                prob = info["single_probs"][forced]
+                candidate_lists.append([(forced, prob)])
+                fixacoes_aplicadas.append(
+                    {
+                        "jogo": label,
+                        "escolha_original": fix_map[label],
+                        "mercado_forcado": forced,
+                    }
+                )
+                continue
+
+        if modo == "seco":
+            # sempre 3 possibilidades por jogo
+            candidates = info["ranked_singles"][:3]
+            candidate_lists.append(unique_candidates(candidates))
+            continue
+
+        if modo == "misto":
+            if idx in allowed_double_games and info["chosen_type"] == "double":
+                candidates = [
+                    *info["ranked_doubles"][:3],
+                    *info["ranked_singles"][:3],
+                ]
+            else:
+                candidates = [
+                    *info["ranked_singles"][:3],
+                    *info["ranked_doubles"][:2],
+                ]
+            candidate_lists.append(unique_candidates(candidates))
+            continue
+
+        if modo == "protecao":
+            if idx in allowed_double_games:
+                candidates = [
+                    *info["ranked_doubles"][:3],
+                    *info["ranked_singles"][:3],
+                ]
+            else:
+                candidates = [
+                    *info["ranked_singles"][:3],
+                    *info["ranked_doubles"][:2],
+                ]
+            candidate_lists.append(unique_candidates(candidates))
+            continue
+
+        candidate_lists.append(unique_candidates(info["ranked_singles"][:3]))
+
+    return candidate_lists, fixacoes_aplicadas
+
+
+def combo_score(candidate_lists, idxs):
+    score = 0.0
+    for game_idx, cand_idx in enumerate(idxs):
+        _opt, prob = candidate_lists[game_idx][cand_idx]
+        score += math.log(max(prob, 1e-9))
+    return score
+
+
+def combo_signature(candidate_lists, idxs):
+    return tuple(candidate_lists[i][idxs[i]][0] for i in range(len(idxs)))
+
+
+def combo_ticket(candidate_lists, idxs):
+    return [candidate_lists[i][idxs[i]] for i in range(len(idxs))]
+
+
+def generate_unique_tickets(candidate_lists, qtd):
+    base = tuple(0 for _ in candidate_lists)
+    heap = [(-combo_score(candidate_lists, base), base)]
+    seen_states = {base}
+    seen_signatures = set()
+    tickets = []
+
+    while heap and len(tickets) < qtd:
+        neg_score, state = heapq.heappop(heap)
+        signature = combo_signature(candidate_lists, state)
+
+        if signature not in seen_signatures:
+            seen_signatures.add(signature)
+            tickets.append(combo_ticket(candidate_lists, state))
+
+        for i in range(len(state)):
+            if state[i] + 1 < len(candidate_lists[i]):
+                nxt = list(state)
+                nxt[i] += 1
+                nxt = tuple(nxt)
+
+                if nxt not in seen_states:
+                    seen_states.add(nxt)
+                    heapq.heappush(
+                        heap,
+                        (-combo_score(candidate_lists, nxt), nxt),
+                    )
+
+    return tickets
 
 
 @app.get("/")
@@ -401,41 +452,34 @@ def generate(
     if modo not in {"seco", "misto", "protecao"}:
         return {"erro": "Modo inválido. Use: seco, misto ou protecao."}
 
+    tipo_dupla = tipo_dupla.lower().strip()
+    if tipo_dupla not in {"padrao", "evitar_12"}:
+        return {"erro": "tipo_dupla inválido. Use: padrao ou evitar_12."}
+
     results = simulate_results(games)
     infos = build_game_infos(results, tipo_dupla)
 
     fixacoes = payload.fixacoes if payload else []
-    fix_map = {}
-    fixacoes_aplicadas = []
-
     valid_labels = {g["label"] for g in games}
+    fix_map = {}
 
     for f in fixacoes:
         if f.jogo in valid_labels:
             fix_map[f.jogo] = f.escolha
-            fixacoes_aplicadas.append(
-                {
-                    "jogo": f.jogo,
-                    "escolha_original": f.escolha,
-                }
+
+    candidate_lists, fixacoes_aplicadas = build_candidate_lists(games, infos, modo, fix_map)
+    tickets = generate_unique_tickets(candidate_lists, qtd)
+
+    if len(tickets) < qtd:
+        return {
+            "erro": (
+                f"Não foi possível gerar {qtd} bilhetes únicos com as restrições atuais. "
+                f"Foram possíveis apenas {len(tickets)}."
             )
+        }
 
     bilhetes = []
-    seen_signatures = set()
-
-    base_ticket = generate_base_ticket(infos, modo)
-    base_ticket = apply_fixacoes(base_ticket, games, infos, fix_map)
-
-    for idx in range(qtd):
-        ticket = diversify_ticket(base_ticket, infos, idx, modo)
-        ticket = apply_fixacoes(ticket, games, infos, fix_map)
-
-        signature = tuple(opt for opt, _ in ticket)
-        if signature in seen_signatures:
-            continue
-
-        seen_signatures.add(signature)
-
+    for ticket in tickets:
         bilhetes.append(
             {
                 "modo": modo,
@@ -443,17 +487,6 @@ def generate(
                 "duplas_usadas": count_double_markets(ticket),
                 "fixacoes_aplicadas": fixacoes_aplicadas,
                 "jogos": format_ticket(games, ticket),
-            }
-        )
-
-    if not bilhetes:
-        bilhetes.append(
-            {
-                "modo": modo,
-                "tipo_dupla": tipo_dupla,
-                "duplas_usadas": count_double_markets(base_ticket),
-                "fixacoes_aplicadas": fixacoes_aplicadas,
-                "jogos": format_ticket(games, base_ticket),
             }
         )
 
