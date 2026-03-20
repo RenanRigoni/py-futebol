@@ -1,0 +1,459 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Gerador de Bilhetes - Brasileirão</title>
+  <style>
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      font-family: Arial, Helvetica, sans-serif;
+      background: #0f1115;
+      color: #f5f7fa;
+    }
+
+    .container {
+      max-width: 1100px;
+      margin: 0 auto;
+      padding: 24px;
+    }
+
+    h1, h2, h3 {
+      margin-top: 0;
+    }
+
+    .card {
+      background: #181c23;
+      border: 1px solid #2a313d;
+      border-radius: 14px;
+      padding: 18px;
+      margin-bottom: 18px;
+    }
+
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      gap: 16px;
+    }
+
+    label {
+      display: block;
+      font-size: 14px;
+      margin-bottom: 8px;
+      color: #c7d0db;
+    }
+
+    select, button {
+      width: 100%;
+      padding: 12px;
+      border-radius: 10px;
+      border: 1px solid #334155;
+      font-size: 15px;
+    }
+
+    select {
+      background: #0f172a;
+      color: #f8fafc;
+    }
+
+    button {
+      background: #2563eb;
+      color: white;
+      font-weight: bold;
+      cursor: pointer;
+      border: none;
+    }
+
+    button:hover {
+      background: #1d4ed8;
+    }
+
+    button:disabled {
+      opacity: 0.65;
+      cursor: not-allowed;
+    }
+
+    .muted {
+      color: #9aa7b8;
+      font-size: 14px;
+    }
+
+    .status {
+      margin-top: 12px;
+      font-size: 14px;
+      color: #93c5fd;
+    }
+
+    .error {
+      background: #3a1616;
+      border: 1px solid #7f1d1d;
+      color: #fecaca;
+      padding: 12px;
+      border-radius: 10px;
+      margin-top: 12px;
+    }
+
+    .success {
+      background: #10261a;
+      border: 1px solid #166534;
+      color: #bbf7d0;
+      padding: 12px;
+      border-radius: 10px;
+      margin-top: 12px;
+    }
+
+    .game-row {
+      display: grid;
+      grid-template-columns: 1.6fr 1fr;
+      gap: 12px;
+      align-items: center;
+      padding: 12px 0;
+      border-bottom: 1px solid #27303c;
+    }
+
+    .game-row:last-child {
+      border-bottom: none;
+    }
+
+    .game-name {
+      font-size: 15px;
+      font-weight: 600;
+    }
+
+    .ticket {
+      border: 1px solid #334155;
+      border-radius: 12px;
+      padding: 16px;
+      margin-bottom: 16px;
+      background: #111827;
+    }
+
+    .ticket-header {
+      display: flex;
+      justify-content: space-between;
+      gap: 12px;
+      flex-wrap: wrap;
+      margin-bottom: 12px;
+    }
+
+    .badge {
+      display: inline-block;
+      padding: 6px 10px;
+      border-radius: 999px;
+      font-size: 12px;
+      font-weight: bold;
+      background: #1e293b;
+      color: #cbd5e1;
+      border: 1px solid #334155;
+    }
+
+    .pick-item {
+      padding: 12px 0;
+      border-bottom: 1px solid #243041;
+    }
+
+    .pick-item:last-child {
+      border-bottom: none;
+    }
+
+    .pick-game {
+      font-weight: 700;
+      margin-bottom: 4px;
+    }
+
+    .pick-line {
+      font-size: 15px;
+      margin-bottom: 4px;
+    }
+
+    .pick-confidence {
+      font-size: 13px;
+      color: #93c5fd;
+    }
+
+    .fixacoes-list {
+      margin-top: 10px;
+      padding-left: 18px;
+      color: #cbd5e1;
+      font-size: 14px;
+    }
+
+    .hidden {
+      display: none;
+    }
+
+    @media (max-width: 700px) {
+      .game-row {
+        grid-template-columns: 1fr;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>Gerador de Bilhetes - Brasileirão</h1>
+    <p class="muted">Escolha a quantidade, o tipo de bilhete e, se quiser, fixe palpites manualmente por jogo.</p>
+
+    <div class="card">
+      <h2>Configuração</h2>
+
+      <div class="grid">
+        <div>
+          <label for="qtd">Quantidade de bilhetes</label>
+          <select id="qtd">
+            <option value="1">1 bilhete</option>
+            <option value="2">2 bilhetes</option>
+            <option value="3">3 bilhetes</option>
+            <option value="5">5 bilhetes</option>
+            <option value="10">10 bilhetes</option>
+          </select>
+        </div>
+
+        <div>
+          <label for="modo">Tipo de bilhete</label>
+          <select id="modo">
+            <option value="misto">Misto</option>
+            <option value="seco">Seco</option>
+            <option value="protecao">Proteção</option>
+          </select>
+        </div>
+      </div>
+
+      <div style="margin-top: 16px;">
+        <button id="btnGerar">Gerar bilhetes</button>
+      </div>
+
+      <div id="status" class="status"></div>
+      <div id="mensagemErro" class="error hidden"></div>
+      <div id="mensagemSucesso" class="success hidden"></div>
+    </div>
+
+    <div class="card">
+      <h2>Fixar palpites manualmente</h2>
+      <p class="muted">Deixe em <strong>Automático</strong> para o modelo decidir. Se escolher um resultado, ele será forçado em todos os bilhetes.</p>
+      <div id="gamesContainer"></div>
+    </div>
+
+    <div class="card">
+      <h2>Resultados</h2>
+      <div id="resultsContainer">
+        <p class="muted">Nenhum bilhete gerado ainda.</p>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const API_BASE = "https://py-futebol.onrender.com";
+
+    const gamesContainer = document.getElementById("gamesContainer");
+    const resultsContainer = document.getElementById("resultsContainer");
+    const btnGerar = document.getElementById("btnGerar");
+    const statusEl = document.getElementById("status");
+    const mensagemErro = document.getElementById("mensagemErro");
+    const mensagemSucesso = document.getElementById("mensagemSucesso");
+    const qtdEl = document.getElementById("qtd");
+    const modoEl = document.getElementById("modo");
+
+    let jogosRodada = [];
+
+    function setStatus(texto) {
+      statusEl.textContent = texto || "";
+    }
+
+    function showError(texto) {
+      mensagemErro.textContent = texto;
+      mensagemErro.classList.remove("hidden");
+    }
+
+    function hideError() {
+      mensagemErro.textContent = "";
+      mensagemErro.classList.add("hidden");
+    }
+
+    function showSuccess(texto) {
+      mensagemSucesso.textContent = texto;
+      mensagemSucesso.classList.remove("hidden");
+    }
+
+    function hideSuccess() {
+      mensagemSucesso.textContent = "";
+      mensagemSucesso.classList.add("hidden");
+    }
+
+    function escapeHtml(text) {
+      return String(text)
+        .replaceAll("&", "&amp;")
+        .replaceAll("<", "&lt;")
+        .replaceAll(">", "&gt;")
+        .replaceAll('"', "&quot;")
+        .replaceAll("'", "&#039;");
+    }
+
+    async function carregarJogos() {
+      hideError();
+      hideSuccess();
+      setStatus("Carregando jogos da rodada...");
+
+      try {
+        const resp = await fetch(`${API_BASE}/games`);
+        const data = await resp.json();
+
+        if (!resp.ok || data.erro) {
+          throw new Error(data.erro || "Falha ao carregar jogos.");
+        }
+
+        jogosRodada = data.detalhes || [];
+        renderizarJogos();
+        setStatus(`Jogos carregados: ${jogosRodada.length}`);
+      } catch (error) {
+        setStatus("");
+        showError(`Erro ao carregar jogos: ${error.message}`);
+      }
+    }
+
+    function renderizarJogos() {
+      if (!jogosRodada.length) {
+        gamesContainer.innerHTML = '<p class="muted">Nenhum jogo disponível no momento.</p>';
+        return;
+      }
+
+      gamesContainer.innerHTML = jogosRodada.map((game, index) => {
+        const options = [
+          `<option value="">Automático</option>`,
+          `<option value="${escapeHtml(game.home)}">${escapeHtml(game.home)}</option>`,
+          `<option value="Empate">Empate</option>`,
+          `<option value="${escapeHtml(game.away)}">${escapeHtml(game.away)}</option>`
+        ].join("");
+
+        return `
+          <div class="game-row">
+            <div class="game-name">${index + 1}. ${escapeHtml(game.label)}</div>
+            <div>
+              <select class="fixacao-select" data-jogo="${escapeHtml(game.label)}">
+                ${options}
+              </select>
+            </div>
+          </div>
+        `;
+      }).join("");
+    }
+
+    function coletarFixacoes() {
+      const selects = document.querySelectorAll(".fixacao-select");
+      const fixacoes = [];
+
+      selects.forEach(select => {
+        const escolha = select.value.trim();
+        const jogo = select.dataset.jogo;
+
+        if (escolha) {
+          fixacoes.push({
+            jogo,
+            escolha
+          });
+        }
+      });
+
+      return fixacoes;
+    }
+
+    function renderizarResultados(data) {
+      const bilhetes = data.bilhetes || [];
+
+      if (!bilhetes.length) {
+        resultsContainer.innerHTML = '<p class="muted">Nenhum bilhete retornado.</p>';
+        return;
+      }
+
+      const html = bilhetes.map((bilhete, index) => {
+        const fixacoesHtml = bilhete.fixacoes_aplicadas && bilhete.fixacoes_aplicadas.length
+          ? `
+            <div style="margin-top: 10px;">
+              <strong>Fixações aplicadas:</strong>
+              <ul class="fixacoes-list">
+                ${bilhete.fixacoes_aplicadas.map(item => `
+                  <li>${escapeHtml(item.jogo)} → ${escapeHtml(item.escolha_original)}</li>
+                `).join("")}
+              </ul>
+            </div>
+          `
+          : "";
+
+        const jogosHtml = bilhete.jogos.map(jogo => `
+          <div class="pick-item">
+            <div class="pick-game">${escapeHtml(jogo.jogo)}</div>
+            <div class="pick-line">${escapeHtml(jogo.palpite)} <span class="badge">${escapeHtml(jogo.mercado)}</span></div>
+            <div class="pick-confidence">Confiança: ${escapeHtml(jogo.confianca)}%</div>
+          </div>
+        `).join("");
+
+        return `
+          <div class="ticket">
+            <div class="ticket-header">
+              <div>
+                <h3 style="margin-bottom: 8px;">Bilhete ${index + 1}</h3>
+                <span class="badge">Modo: ${escapeHtml(bilhete.modo)}</span>
+                <span class="badge">Duplas usadas: ${escapeHtml(bilhete.duplas_usadas)}</span>
+              </div>
+            </div>
+            ${fixacoesHtml}
+            <div style="margin-top: 12px;">
+              ${jogosHtml}
+            </div>
+          </div>
+        `;
+      }).join("");
+
+      resultsContainer.innerHTML = html;
+    }
+
+    async function gerarBilhetes() {
+      hideError();
+      hideSuccess();
+
+      const qtd = qtdEl.value;
+      const modo = modoEl.value;
+      const fixacoes = coletarFixacoes();
+
+      btnGerar.disabled = true;
+      setStatus("Gerando bilhetes...");
+
+      try {
+        const resp = await fetch(`${API_BASE}/generate?qtd=${encodeURIComponent(qtd)}&modo=${encodeURIComponent(modo)}`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json"
+          },
+          body: JSON.stringify({ fixacoes })
+        });
+
+        const data = await resp.json();
+
+        if (!resp.ok || data.erro) {
+          throw new Error(data.erro || "Falha ao gerar bilhetes.");
+        }
+
+        renderizarResultados(data);
+
+        showSuccess(
+          `Bilhetes gerados com sucesso. Solicitados: ${data.qtd_solicitada} | Gerados: ${data.qtd_gerada} | Fixações válidas: ${data.fixacoes_validas}`
+        );
+        setStatus("");
+      } catch (error) {
+        setStatus("");
+        showError(`Erro ao gerar bilhetes: ${error.message}`);
+      } finally {
+        btnGerar.disabled = false;
+      }
+    }
+
+    btnGerar.addEventListener("click", gerarBilhetes);
+
+    carregarJogos();
+  </script>
+</body>
+</html>
