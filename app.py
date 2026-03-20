@@ -31,6 +31,9 @@ STRONG_SINGLE_THRESHOLD = 0.58
 VERY_STRONG_SINGLE_THRESHOLD = 0.67
 DOUBLE_ADVANTAGE_MARGIN = 0.12
 
+MAX_DOUBLE_CHANCES_MISTO = 3
+MAX_DOUBLE_CHANCES_PROTECAO = 6
+
 
 class FixacaoInput(BaseModel):
     jogo: str
@@ -41,9 +44,10 @@ class GenerateRequest(BaseModel):
     fixacoes: list[FixacaoInput] = Field(default_factory=list)
 
 
-def filter_double_options(double_probs, tipo_dupla: str):
+def filter_double_options(double_probs: dict, tipo_dupla: str) -> dict:
     if tipo_dupla == "evitar_12":
-        return {k: v for k, v in double_probs.items() if k in {"1X", "X2"}}
+        filtered = {k: v for k, v in double_probs.items() if k in {"1X", "X2"}}
+        return filtered if filtered else double_probs
     return double_probs
 
 
@@ -52,14 +56,14 @@ def validate_env():
         raise RuntimeError("API_KEY não configurada")
 
 
-def normalize_probs(p1, px, p2):
+def normalize_probs(p1: float, px: float, p2: float):
     total = p1 + px + p2
     if total <= 0:
         raise RuntimeError("Probabilidades inválidas")
     return p1 / total, px / total, p2 / total
 
 
-def build_game_label(home, away):
+def build_game_label(home: str, away: str) -> str:
     return f"{home} x {away}"
 
 
@@ -87,7 +91,9 @@ def get_games():
         if not home or not away:
             continue
 
-        home_odds, draw_odds, away_odds = [], [], []
+        home_odds = []
+        draw_odds = []
+        away_odds = []
 
         for book in game.get("bookmakers", []):
             for market in book.get("markets", []):
@@ -180,13 +186,23 @@ def build_game_infos(results, tipo_dupla="padrao"):
 
         single = {k: option_probability(arr, k) for k in ["1", "X", "2"]}
         double_raw = {k: option_probability(arr, k) for k in ["1X", "X2", "12"]}
-
         double = filter_double_options(double_raw, tipo_dupla)
-        if not double:
-            double = double_raw
 
-        best_single = max(single.items(), key=lambda x: x[1])
-        best_double = max(double.items(), key=lambda x: x[1])
+        ranked_singles = sorted(single.items(), key=lambda x: x[1], reverse=True)
+        ranked_doubles = sorted(double.items(), key=lambda x: x[1], reverse=True)
+
+        best_single = ranked_singles[0]
+        best_double = ranked_doubles[0]
+
+        chosen_type = "single"
+        if best_single[1] >= VERY_STRONG_SINGLE_THRESHOLD:
+            chosen_type = "single"
+        elif best_single[1] >= STRONG_SINGLE_THRESHOLD:
+            chosen_type = "single"
+        elif best_double[1] - best_single[1] >= DOUBLE_ADVANTAGE_MARGIN:
+            chosen_type = "double"
+        else:
+            chosen_type = "single"
 
         infos.append(
             {
@@ -194,29 +210,14 @@ def build_game_infos(results, tipo_dupla="padrao"):
                 "double_probs": double,
                 "best_single": best_single,
                 "best_double": best_double,
+                "ranked_singles": ranked_singles,
+                "ranked_doubles": ranked_doubles,
+                "chosen_type": chosen_type,
                 "protection_score": best_double[1] - best_single[1],
             }
         )
 
     return infos
-
-
-def generate_ticket_from_infos(infos, modo):
-    modo = modo.lower().strip()
-    ticket = []
-
-    for info in infos:
-        if modo == "seco":
-            ticket.append(info["best_single"])
-        elif modo in {"misto", "protecao"}:
-            if info["protection_score"] > DOUBLE_ADVANTAGE_MARGIN:
-                ticket.append(info["best_double"])
-            else:
-                ticket.append(info["best_single"])
-        else:
-            ticket.append(info["best_single"])
-
-    return ticket
 
 
 def normalize_fixed_choice(escolha, home, away):
@@ -228,6 +229,76 @@ def normalize_fixed_choice(escolha, home, away):
     if e in ["empate", "x"]:
         return "X"
     return None
+
+
+def get_allowed_double_games(infos, modo):
+    if modo == "misto":
+        limit = MAX_DOUBLE_CHANCES_MISTO
+    elif modo == "protecao":
+        limit = MAX_DOUBLE_CHANCES_PROTECAO
+    else:
+        return set()
+
+    ranked = sorted(
+        enumerate(infos),
+        key=lambda x: x[1]["protection_score"],
+        reverse=True,
+    )
+
+    return {idx for idx, _ in ranked[:limit]}
+
+
+def generate_base_ticket(infos, modo):
+    modo = modo.lower().strip()
+    ticket = []
+
+    allowed_double_games = get_allowed_double_games(infos, modo)
+
+    for idx, info in enumerate(infos):
+        if modo == "seco":
+            ticket.append(info["best_single"])
+            continue
+
+        if idx in allowed_double_games and info["chosen_type"] == "double":
+            ticket.append(info["best_double"])
+        else:
+            ticket.append(info["best_single"])
+
+    return ticket
+
+
+def diversify_ticket(base_ticket, infos, ticket_index, modo):
+    if ticket_index == 0:
+        return list(base_ticket)
+
+    diversified = []
+
+    for idx, (opt, prob) in enumerate(base_ticket):
+        info = infos[idx]
+
+        if modo == "seco":
+            candidates = info["ranked_singles"]
+        elif opt in {"1X", "X2", "12"}:
+            candidates = info["ranked_doubles"]
+        else:
+            candidates = info["ranked_singles"]
+
+        if len(candidates) == 1:
+            diversified.append((opt, prob))
+            continue
+
+        alt_idx = ticket_index % len(candidates)
+        alt_opt, alt_prob = candidates[alt_idx]
+
+        if opt in {"1X", "X2", "12"} and alt_prob < 0.55:
+            alt_opt, alt_prob = candidates[0]
+
+        if opt in {"1", "X", "2"} and alt_prob < 0.20:
+            alt_opt, alt_prob = candidates[0]
+
+        diversified.append((alt_opt, alt_prob))
+
+    return diversified
 
 
 def apply_fixacoes(ticket, games, infos, fix_map):
@@ -326,6 +397,10 @@ def generate(
     if not games:
         return {"erro": "Nenhum jogo encontrado."}
 
+    modo = modo.lower().strip()
+    if modo not in {"seco", "misto", "protecao"}:
+        return {"erro": "Modo inválido. Use: seco, misto ou protecao."}
+
     results = simulate_results(games)
     infos = build_game_infos(results, tipo_dupla)
 
@@ -346,10 +421,20 @@ def generate(
             )
 
     bilhetes = []
+    seen_signatures = set()
 
-    for _ in range(qtd):
-        ticket = generate_ticket_from_infos(infos, modo)
+    base_ticket = generate_base_ticket(infos, modo)
+    base_ticket = apply_fixacoes(base_ticket, games, infos, fix_map)
+
+    for idx in range(qtd):
+        ticket = diversify_ticket(base_ticket, infos, idx, modo)
         ticket = apply_fixacoes(ticket, games, infos, fix_map)
+
+        signature = tuple(opt for opt, _ in ticket)
+        if signature in seen_signatures:
+            continue
+
+        seen_signatures.add(signature)
 
         bilhetes.append(
             {
@@ -358,6 +443,17 @@ def generate(
                 "duplas_usadas": count_double_markets(ticket),
                 "fixacoes_aplicadas": fixacoes_aplicadas,
                 "jogos": format_ticket(games, ticket),
+            }
+        )
+
+    if not bilhetes:
+        bilhetes.append(
+            {
+                "modo": modo,
+                "tipo_dupla": tipo_dupla,
+                "duplas_usadas": count_double_markets(base_ticket),
+                "fixacoes_aplicadas": fixacoes_aplicadas,
+                "jogos": format_ticket(games, base_ticket),
             }
         )
 
