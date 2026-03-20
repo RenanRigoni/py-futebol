@@ -196,7 +196,6 @@
 <body>
   <div class="container">
     <h1>Gerador de Bilhetes - Brasileirão</h1>
-    <p class="muted">Escolha a quantidade, o tipo de bilhete e, se quiser, fixe palpites manualmente por jogo.</p>
 
     <div class="card">
       <h2>Configuração</h2>
@@ -221,6 +220,16 @@
             <option value="protecao">Proteção</option>
           </select>
         </div>
+
+        <!-- 🔥 NOVO CAMPO -->
+        <div>
+          <label for="tipo_dupla">Tipo de dupla chance</label>
+          <select id="tipo_dupla">
+            <option value="padrao">Padrão (modelo decide)</option>
+            <option value="evitar_12">Evitar 12 (usar só 1X / X2)</option>
+          </select>
+        </div>
+
       </div>
 
       <div style="margin-top: 16px;">
@@ -234,226 +243,82 @@
 
     <div class="card">
       <h2>Fixar palpites manualmente</h2>
-      <p class="muted">Deixe em <strong>Automático</strong> para o modelo decidir. Se escolher um resultado, ele será forçado em todos os bilhetes.</p>
       <div id="gamesContainer"></div>
     </div>
 
     <div class="card">
       <h2>Resultados</h2>
-      <div id="resultsContainer">
-        <p class="muted">Nenhum bilhete gerado ainda.</p>
-      </div>
+      <div id="resultsContainer"></div>
     </div>
   </div>
 
-  <script>
-    const API_BASE = "https://py-futebol.onrender.com";
+<script>
 
-    const gamesContainer = document.getElementById("gamesContainer");
-    const resultsContainer = document.getElementById("resultsContainer");
-    const btnGerar = document.getElementById("btnGerar");
-    const statusEl = document.getElementById("status");
-    const mensagemErro = document.getElementById("mensagemErro");
-    const mensagemSucesso = document.getElementById("mensagemSucesso");
-    const qtdEl = document.getElementById("qtd");
-    const modoEl = document.getElementById("modo");
+const API_BASE = "https://py-futebol.onrender.com";
 
-    let jogosRodada = [];
+const gamesContainer = document.getElementById("gamesContainer");
+const resultsContainer = document.getElementById("resultsContainer");
+const btnGerar = document.getElementById("btnGerar");
 
-    function setStatus(texto) {
-      statusEl.textContent = texto || "";
+async function carregarJogos(){
+  const r = await fetch(`${API_BASE}/games`);
+  const data = await r.json();
+
+  gamesContainer.innerHTML = data.detalhes.map(g=>`
+    <div class="game-row">
+      <div>${g.label}</div>
+      <select data-jogo="${g.label}">
+        <option value="">Auto</option>
+        <option value="${g.home}">${g.home}</option>
+        <option value="Empate">Empate</option>
+        <option value="${g.away}">${g.away}</option>
+      </select>
+    </div>
+  `).join("");
+}
+
+function getFixacoes(){
+  const arr=[]
+  document.querySelectorAll("[data-jogo]").forEach(s=>{
+    if(s.value){
+      arr.push({ jogo:s.dataset.jogo, escolha:s.value })
     }
+  })
+  return arr
+}
 
-    function showError(texto) {
-      mensagemErro.textContent = texto;
-      mensagemErro.classList.remove("hidden");
-    }
+async function gerarBilhetes(){
 
-    function hideError() {
-      mensagemErro.textContent = "";
-      mensagemErro.classList.add("hidden");
-    }
+  const qtd = document.getElementById("qtd").value;
+  const modo = document.getElementById("modo").value;
+  const tipo_dupla = document.getElementById("tipo_dupla").value;
 
-    function showSuccess(texto) {
-      mensagemSucesso.textContent = texto;
-      mensagemSucesso.classList.remove("hidden");
-    }
+  const r = await fetch(`${API_BASE}/generate?qtd=${qtd}&modo=${modo}&tipo_dupla=${tipo_dupla}`,{
+    method:"POST",
+    headers:{ "Content-Type":"application/json" },
+    body: JSON.stringify({ fixacoes: getFixacoes() })
+  });
 
-    function hideSuccess() {
-      mensagemSucesso.textContent = "";
-      mensagemSucesso.classList.add("hidden");
-    }
+  const data = await r.json();
 
-    function escapeHtml(text) {
-      return String(text)
-        .replaceAll("&", "&amp;")
-        .replaceAll("<", "&lt;")
-        .replaceAll(">", "&gt;")
-        .replaceAll('"', "&quot;")
-        .replaceAll("'", "&#039;");
-    }
+  resultsContainer.innerHTML = data.bilhetes.map((b,i)=>`
+    <div class="ticket">
+      <h3>Bilhete ${i+1}</h3>
+      ${b.jogos.map(j=>`
+        <div class="pick-item">
+          <div class="pick-game">${j.jogo}</div>
+          ${j.palpite} <span class="badge">${j.mercado}</span>
+        </div>
+      `).join("")}
+    </div>
+  `).join("");
+}
 
-    async function carregarJogos() {
-      hideError();
-      hideSuccess();
-      setStatus("Carregando jogos da rodada...");
+btnGerar.onclick = gerarBilhetes;
 
-      try {
-        const resp = await fetch(`${API_BASE}/games`);
-        const data = await resp.json();
+carregarJogos();
 
-        if (!resp.ok || data.erro) {
-          throw new Error(data.erro || "Falha ao carregar jogos.");
-        }
+</script>
 
-        jogosRodada = data.detalhes || [];
-        renderizarJogos();
-        setStatus(`Jogos carregados: ${jogosRodada.length}`);
-      } catch (error) {
-        setStatus("");
-        showError(`Erro ao carregar jogos: ${error.message}`);
-      }
-    }
-
-    function renderizarJogos() {
-      if (!jogosRodada.length) {
-        gamesContainer.innerHTML = '<p class="muted">Nenhum jogo disponível no momento.</p>';
-        return;
-      }
-
-      gamesContainer.innerHTML = jogosRodada.map((game, index) => {
-        const options = [
-          `<option value="">Automático</option>`,
-          `<option value="${escapeHtml(game.home)}">${escapeHtml(game.home)}</option>`,
-          `<option value="Empate">Empate</option>`,
-          `<option value="${escapeHtml(game.away)}">${escapeHtml(game.away)}</option>`
-        ].join("");
-
-        return `
-          <div class="game-row">
-            <div class="game-name">${index + 1}. ${escapeHtml(game.label)}</div>
-            <div>
-              <select class="fixacao-select" data-jogo="${escapeHtml(game.label)}">
-                ${options}
-              </select>
-            </div>
-          </div>
-        `;
-      }).join("");
-    }
-
-    function coletarFixacoes() {
-      const selects = document.querySelectorAll(".fixacao-select");
-      const fixacoes = [];
-
-      selects.forEach(select => {
-        const escolha = select.value.trim();
-        const jogo = select.dataset.jogo;
-
-        if (escolha) {
-          fixacoes.push({
-            jogo,
-            escolha
-          });
-        }
-      });
-
-      return fixacoes;
-    }
-
-    function renderizarResultados(data) {
-      const bilhetes = data.bilhetes || [];
-
-      if (!bilhetes.length) {
-        resultsContainer.innerHTML = '<p class="muted">Nenhum bilhete retornado.</p>';
-        return;
-      }
-
-      const html = bilhetes.map((bilhete, index) => {
-        const fixacoesHtml = bilhete.fixacoes_aplicadas && bilhete.fixacoes_aplicadas.length
-          ? `
-            <div style="margin-top: 10px;">
-              <strong>Fixações aplicadas:</strong>
-              <ul class="fixacoes-list">
-                ${bilhete.fixacoes_aplicadas.map(item => `
-                  <li>${escapeHtml(item.jogo)} → ${escapeHtml(item.escolha_original)}</li>
-                `).join("")}
-              </ul>
-            </div>
-          `
-          : "";
-
-        const jogosHtml = bilhete.jogos.map(jogo => `
-          <div class="pick-item">
-            <div class="pick-game">${escapeHtml(jogo.jogo)}</div>
-            <div class="pick-line">${escapeHtml(jogo.palpite)} <span class="badge">${escapeHtml(jogo.mercado)}</span></div>
-            <div class="pick-confidence">Confiança: ${escapeHtml(jogo.confianca)}%</div>
-          </div>
-        `).join("");
-
-        return `
-          <div class="ticket">
-            <div class="ticket-header">
-              <div>
-                <h3 style="margin-bottom: 8px;">Bilhete ${index + 1}</h3>
-                <span class="badge">Modo: ${escapeHtml(bilhete.modo)}</span>
-                <span class="badge">Duplas usadas: ${escapeHtml(bilhete.duplas_usadas)}</span>
-              </div>
-            </div>
-            ${fixacoesHtml}
-            <div style="margin-top: 12px;">
-              ${jogosHtml}
-            </div>
-          </div>
-        `;
-      }).join("");
-
-      resultsContainer.innerHTML = html;
-    }
-
-    async function gerarBilhetes() {
-      hideError();
-      hideSuccess();
-
-      const qtd = qtdEl.value;
-      const modo = modoEl.value;
-      const fixacoes = coletarFixacoes();
-
-      btnGerar.disabled = true;
-      setStatus("Gerando bilhetes...");
-
-      try {
-        const resp = await fetch(`${API_BASE}/generate?qtd=${encodeURIComponent(qtd)}&modo=${encodeURIComponent(modo)}`, {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json"
-          },
-          body: JSON.stringify({ fixacoes })
-        });
-
-        const data = await resp.json();
-
-        if (!resp.ok || data.erro) {
-          throw new Error(data.erro || "Falha ao gerar bilhetes.");
-        }
-
-        renderizarResultados(data);
-
-        showSuccess(
-          `Bilhetes gerados com sucesso. Solicitados: ${data.qtd_solicitada} | Gerados: ${data.qtd_gerada} | Fixações válidas: ${data.fixacoes_validas}`
-        );
-        setStatus("");
-      } catch (error) {
-        setStatus("");
-        showError(`Erro ao gerar bilhetes: ${error.message}`);
-      } finally {
-        btnGerar.disabled = false;
-      }
-    }
-
-    btnGerar.addEventListener("click", gerarBilhetes);
-
-    carregarJogos();
-  </script>
 </body>
 </html>
