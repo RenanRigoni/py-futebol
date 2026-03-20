@@ -1,8 +1,10 @@
 import os
 import requests
 import numpy as np
+from typing import Optional
 from fastapi import FastAPI, Query
 from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel, Field
 
 app = FastAPI(title="py-futebol API")
 
@@ -32,6 +34,15 @@ MAX_DOUBLE_CHANCES_MISTO = 3
 MAX_DOUBLE_CHANCES_PROTECAO = 5
 
 
+class FixacaoInput(BaseModel):
+    jogo: str = Field(..., description="Ex.: Corinthians x Flamengo")
+    escolha: str = Field(..., description='Ex.: Flamengo, Corinthians, Empate, 1, X, 2')
+
+
+class GenerateRequest(BaseModel):
+    fixacoes: list[FixacaoInput] = Field(default_factory=list)
+
+
 def validate_env() -> None:
     if not API_KEY:
         raise RuntimeError("API_KEY não configurada no ambiente.")
@@ -42,6 +53,10 @@ def normalize_probs(p1: float, px: float, p2: float) -> tuple[float, float, floa
     if total <= 0:
         return 0.0, 0.0, 0.0
     return p1 / total, px / total, p2 / total
+
+
+def build_game_label(home: str, away: str) -> str:
+    return f"{home} x {away}"
 
 
 def get_games():
@@ -118,6 +133,7 @@ def get_games():
             {
                 "home": home,
                 "away": away,
+                "label": build_game_label(home, away),
                 "home_xg": float(home_xg),
                 "away_xg": float(away_xg),
             }
@@ -208,6 +224,8 @@ def build_game_infos(results):
 
         game_infos.append(
             {
+                "single_probs": single_probs,
+                "double_probs": double_probs,
                 "best_single": best_single,
                 "best_double": best_double,
                 "ranked_singles": ranked_singles,
@@ -311,6 +329,42 @@ def diversify_ticket(base_ticket, game_infos, ticket_index: int, mode: str):
     return diversified
 
 
+def normalize_fixed_choice(escolha: str, home: str, away: str) -> Optional[str]:
+    value = escolha.strip().lower()
+
+    if value in {"1", home.lower()}:
+        return "1"
+    if value in {"2", away.lower()}:
+        return "2"
+    if value in {"x", "empate"}:
+        return "X"
+
+    return None
+
+
+def apply_fixacoes_to_ticket(ticket, games, game_infos, fixacoes_map: dict[str, str]):
+    adjusted_ticket = []
+
+    for idx, (opt, prob) in enumerate(ticket):
+        game = games[idx]
+        label = game["label"]
+
+        if label not in fixacoes_map:
+            adjusted_ticket.append((opt, prob))
+            continue
+
+        forced = normalize_fixed_choice(fixacoes_map[label], game["home"], game["away"])
+
+        if forced is None:
+            adjusted_ticket.append((opt, prob))
+            continue
+
+        forced_prob = game_infos[idx]["single_probs"][forced]
+        adjusted_ticket.append((forced, forced_prob))
+
+    return adjusted_ticket
+
+
 def symbol_to_text(pick: str, home: str, away: str) -> str:
     if pick == "1":
         return home
@@ -327,7 +381,7 @@ def symbol_to_text(pick: str, home: str, away: str) -> str:
     return pick
 
 
-def format_ticket_response(games, ticket, mode: str):
+def format_ticket_response(games, ticket, mode: str, fixacoes_aplicadas: list[dict]):
     output = []
     doubles_used = 0
 
@@ -340,7 +394,7 @@ def format_ticket_response(games, ticket, mode: str):
 
         output.append(
             {
-                "jogo": f"{home} x {away}",
+                "jogo": games[i]["label"],
                 "palpite": symbol_to_text(pick, home, away),
                 "mercado": pick,
                 "confianca": round(prob * 100, 1),
@@ -350,6 +404,7 @@ def format_ticket_response(games, ticket, mode: str):
     return {
         "modo": mode,
         "duplas_usadas": doubles_used,
+        "fixacoes_aplicadas": fixacoes_aplicadas,
         "jogos": output,
     }
 
@@ -364,8 +419,23 @@ def healthz():
     return {"ok": True}
 
 
+@app.get("/games")
+def list_games():
+    try:
+        games = get_games()
+    except Exception as e:
+        return {"erro": f"Falha ao obter jogos: {str(e)}"}
+
+    return {
+        "qtd_jogos": len(games),
+        "jogos": [g["label"] for g in games],
+        "detalhes": games,
+    }
+
+
 @app.post("/generate")
 def generate(
+    payload: Optional[GenerateRequest] = None,
     qtd: int = Query(1, ge=1, le=10),
     modo: str = Query("misto"),
 ):
@@ -388,28 +458,60 @@ def generate(
     except Exception as e:
         return {"erro": f"Falha na simulação: {str(e)}"}
 
+    fixacoes = payload.fixacoes if payload else []
+    valid_game_labels = {g["label"] for g in games}
+    fixacoes_map = {}
+    fixacoes_aplicadas = []
+
+    for item in fixacoes:
+        jogo = item.jogo.strip()
+        escolha = item.escolha.strip()
+
+        if jogo not in valid_game_labels:
+            continue
+
+        game = next(g for g in games if g["label"] == jogo)
+        normalized = normalize_fixed_choice(escolha, game["home"], game["away"])
+
+        if normalized is None:
+            continue
+
+        fixacoes_map[jogo] = escolha
+        fixacoes_aplicadas.append(
+            {
+                "jogo": jogo,
+                "escolha_original": escolha,
+                "mercado_forcado": normalized,
+            }
+        )
+
     bilhetes = []
     seen_signatures = set()
 
     base_ticket = generate_ticket_from_infos(game_infos, modo)
+    base_ticket = apply_fixacoes_to_ticket(base_ticket, games, game_infos, fixacoes_map)
 
     for idx in range(qtd):
         ticket = diversify_ticket(base_ticket, game_infos, idx, modo)
+        ticket = apply_fixacoes_to_ticket(ticket, games, game_infos, fixacoes_map)
+
         signature = tuple(opt for opt, _prob in ticket)
 
         if signature in seen_signatures:
             continue
 
         seen_signatures.add(signature)
-        bilhetes.append(format_ticket_response(games, ticket, modo))
+        bilhetes.append(format_ticket_response(games, ticket, modo, fixacoes_aplicadas))
 
     if not bilhetes:
-        bilhetes.append(format_ticket_response(games, base_ticket, modo))
+        bilhetes.append(format_ticket_response(games, base_ticket, modo, fixacoes_aplicadas))
 
     return {
         "qtd_solicitada": qtd,
         "qtd_gerada": len(bilhetes),
         "modo": modo,
         "simulacoes": SIMULATIONS,
+        "fixacoes_recebidas": len(fixacoes),
+        "fixacoes_validas": len(fixacoes_aplicadas),
         "bilhetes": bilhetes,
     }
