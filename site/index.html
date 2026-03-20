@@ -182,6 +182,43 @@
       font-size: 14px;
     }
 
+    .radio-block {
+      margin-top: 16px;
+      padding: 14px;
+      border: 1px solid #334155;
+      border-radius: 12px;
+      background: #0f172a;
+    }
+
+    .radio-title {
+      font-size: 14px;
+      color: #c7d0db;
+      margin-bottom: 10px;
+      font-weight: 600;
+    }
+
+    .radio-group {
+      display: flex;
+      gap: 18px;
+      flex-wrap: wrap;
+    }
+
+    .radio-option {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      cursor: pointer;
+      color: #f8fafc;
+      font-size: 15px;
+    }
+
+    .radio-option input[type="radio"] {
+      width: auto;
+      margin: 0;
+      accent-color: #2563eb;
+      cursor: pointer;
+    }
+
     .hidden {
       display: none;
     }
@@ -189,6 +226,11 @@
     @media (max-width: 700px) {
       .game-row {
         grid-template-columns: 1fr;
+      }
+
+      .radio-group {
+        flex-direction: column;
+        gap: 10px;
       }
     }
   </style>
@@ -222,7 +264,6 @@
           </select>
         </div>
 
-        <!-- 🔥 ADIÇÃO -->
         <div>
           <label for="tipo_dupla">Tipo de dupla chance</label>
           <select id="tipo_dupla">
@@ -231,6 +272,28 @@
           </select>
         </div>
 
+        <div>
+          <label for="perfil">Perfil</label>
+          <select id="perfil">
+            <option value="conservador">Conservador</option>
+            <option value="diversificado">Diversificado</option>
+          </select>
+        </div>
+      </div>
+
+      <div class="radio-block">
+        <div class="radio-title">Jogos por bilhete</div>
+        <div class="radio-group">
+          <label class="radio-option">
+            <input type="radio" name="ticket_size" value="10" checked />
+            <span>10 jogos</span>
+          </label>
+
+          <label class="radio-option">
+            <input type="radio" name="ticket_size" value="7" />
+            <span>7 jogos (proteção)</span>
+          </label>
+        </div>
       </div>
 
       <div style="margin-top: 16px;">
@@ -301,6 +364,11 @@
         .replaceAll(">", "&gt;")
         .replaceAll('"', "&quot;")
         .replaceAll("'", "&#039;");
+    }
+
+    function getSelectedTicketSize() {
+      const selected = document.querySelector('input[name="ticket_size"]:checked');
+      return selected ? selected.value : "10";
     }
 
     async function carregarJogos() {
@@ -407,7 +475,9 @@
               <div>
                 <h3 style="margin-bottom: 8px;">Bilhete ${index + 1}</h3>
                 <span class="badge">Modo: ${escapeHtml(bilhete.modo)}</span>
+                <span class="badge">Perfil: ${escapeHtml(bilhete.perfil)}</span>
                 <span class="badge">Duplas usadas: ${escapeHtml(bilhete.duplas_usadas)}</span>
+                <span class="badge">Jogos: ${escapeHtml(bilhete.jogos_no_bilhete)}</span>
               </div>
             </div>
             ${fixacoesHtml}
@@ -427,20 +497,25 @@
 
       const qtd = qtdEl.value;
       const modo = modoEl.value;
-      const tipo_dupla = document.getElementById("tipo_dupla").value; // 🔥 NOVO
+      const tipo_dupla = document.getElementById("tipo_dupla").value;
+      const perfil = document.getElementById("perfil").value;
+      const ticket_size = getSelectedTicketSize();
       const fixacoes = coletarFixacoes();
 
       btnGerar.disabled = true;
       setStatus("Gerando bilhetes...");
 
       try {
-        const resp = await fetch(`${API_BASE}/generate?qtd=${encodeURIComponent(qtd)}&modo=${encodeURIComponent(modo)}&tipo_dupla=${encodeURIComponent(tipo_dupla)}`, {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json"
-          },
-          body: JSON.stringify({ fixacoes })
-        });
+        const resp = await fetch(
+          `${API_BASE}/generate?qtd=${encodeURIComponent(qtd)}&modo=${encodeURIComponent(modo)}&tipo_dupla=${encodeURIComponent(tipo_dupla)}&ticket_size=${encodeURIComponent(ticket_size)}&perfil=${encodeURIComponent(perfil)}`,
+          {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json"
+            },
+            body: JSON.stringify({ fixacoes })
+          }
+        );
 
         const data = await resp.json();
 
@@ -451,7 +526,7 @@
         renderizarResultados(data);
 
         showSuccess(
-          `Bilhetes gerados com sucesso. Solicitados: ${data.qtd_solicitada} | Gerados: ${data.qtd_gerada} | Fixações válidas: ${data.fixacoes_validas}`
+          `Bilhetes gerados com sucesso. Solicitados: ${data.qtd_solicitada} | Gerados: ${data.qtd_gerada} | Jogos por bilhete: ${data.ticket_size} | Perfil: ${data.perfil} | Fixações válidas: ${data.fixacoes_validas}`
         );
         setStatus("");
       } catch (error) {
