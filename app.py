@@ -36,6 +36,9 @@ DOUBLE_ADVANTAGE_MARGIN = 0.12
 MAX_DOUBLE_CHANCES_MISTO = 3
 MAX_DOUBLE_CHANCES_PROTECAO = 6
 
+ANCHOR_STRONG_THRESHOLD = 0.65
+ANCHOR_MEDIUM_THRESHOLD = 0.58
+
 
 class FixacaoInput(BaseModel):
     jogo: str
@@ -272,13 +275,24 @@ def format_ticket(games, ticket):
     return out
 
 
-def get_allowed_double_games(infos, modo):
+def get_allowed_double_games(infos, modo, perfil):
     if modo == "misto":
         limit = MAX_DOUBLE_CHANCES_MISTO
     elif modo == "protecao":
         limit = MAX_DOUBLE_CHANCES_PROTECAO
     else:
         return set()
+
+    if perfil == "conservador":
+        if modo == "misto":
+            limit = 2
+        elif modo == "protecao":
+            limit = 5
+    elif perfil == "diversificado":
+        if modo == "misto":
+            limit = 4
+        elif modo == "protecao":
+            limit = 6
 
     ranked = sorted(
         enumerate(infos),
@@ -299,8 +313,8 @@ def unique_candidates(candidates):
     return out
 
 
-def build_candidate_lists(games, infos, modo, fix_map):
-    allowed_double_games = get_allowed_double_games(infos, modo)
+def build_candidate_lists(games, infos, modo, fix_map, perfil):
+    allowed_double_games = get_allowed_double_games(infos, modo, perfil)
     candidate_lists = []
     fixacoes_aplicadas = []
 
@@ -308,7 +322,6 @@ def build_candidate_lists(games, infos, modo, fix_map):
         label = game["label"]
         info = infos[idx]
 
-        # fixação manual sempre tem prioridade
         if label in fix_map:
             forced = normalize_fixed_choice(fix_map[label], game["home"], game["away"])
             if forced is not None:
@@ -324,36 +337,63 @@ def build_candidate_lists(games, infos, modo, fix_map):
                 continue
 
         if modo == "seco":
-            # sempre 3 possibilidades por jogo
             candidates = info["ranked_singles"][:3]
+            if perfil == "conservador":
+                candidates = info["ranked_singles"][:2] + info["ranked_singles"][2:3]
+            elif perfil == "diversificado":
+                candidates = info["ranked_singles"][:3]
             candidate_lists.append(unique_candidates(candidates))
             continue
 
         if modo == "misto":
             if idx in allowed_double_games and info["chosen_type"] == "double":
-                candidates = [
-                    *info["ranked_doubles"][:3],
-                    *info["ranked_singles"][:3],
-                ]
+                if perfil == "conservador":
+                    candidates = [
+                        *info["ranked_doubles"][:2],
+                        *info["ranked_singles"][:2],
+                    ]
+                else:
+                    candidates = [
+                        *info["ranked_doubles"][:3],
+                        *info["ranked_singles"][:3],
+                    ]
             else:
-                candidates = [
-                    *info["ranked_singles"][:3],
-                    *info["ranked_doubles"][:2],
-                ]
+                if perfil == "conservador":
+                    candidates = [
+                        *info["ranked_singles"][:2],
+                        *info["ranked_doubles"][:1],
+                    ]
+                else:
+                    candidates = [
+                        *info["ranked_singles"][:3],
+                        *info["ranked_doubles"][:2],
+                    ]
             candidate_lists.append(unique_candidates(candidates))
             continue
 
         if modo == "protecao":
             if idx in allowed_double_games:
-                candidates = [
-                    *info["ranked_doubles"][:3],
-                    *info["ranked_singles"][:3],
-                ]
+                if perfil == "conservador":
+                    candidates = [
+                        *info["ranked_doubles"][:2],
+                        *info["ranked_singles"][:2],
+                    ]
+                else:
+                    candidates = [
+                        *info["ranked_doubles"][:3],
+                        *info["ranked_singles"][:3],
+                    ]
             else:
-                candidates = [
-                    *info["ranked_singles"][:3],
-                    *info["ranked_doubles"][:2],
-                ]
+                if perfil == "conservador":
+                    candidates = [
+                        *info["ranked_singles"][:2],
+                        *info["ranked_doubles"][:1],
+                    ]
+                else:
+                    candidates = [
+                        *info["ranked_singles"][:3],
+                        *info["ranked_doubles"][:2],
+                    ]
             candidate_lists.append(unique_candidates(candidates))
             continue
 
@@ -362,11 +402,90 @@ def build_candidate_lists(games, infos, modo, fix_map):
     return candidate_lists, fixacoes_aplicadas
 
 
-def combo_score(candidate_lists, idxs):
+def choose_game_indexes_for_ticket_size(
+    games,
+    infos,
+    candidate_lists,
+    fix_map,
+    ticket_size: int,
+    perfil: str
+):
+    if ticket_size == len(games):
+        return list(range(len(games)))
+
+    fixed_indexes = []
+    for idx, game in enumerate(games):
+        if game["label"] in fix_map:
+            forced = normalize_fixed_choice(fix_map[game["label"]], game["home"], game["away"])
+            if forced is not None:
+                fixed_indexes.append(idx)
+
+    fixed_indexes = list(dict.fromkeys(fixed_indexes))
+
+    if len(fixed_indexes) > ticket_size:
+        raise RuntimeError(
+            f"Você fixou {len(fixed_indexes)} jogos válidos, mas escolheu bilhete com apenas {ticket_size} jogos."
+        )
+
+    scored = []
+    for idx in range(len(games)):
+        top_prob = candidate_lists[idx][0][1] if candidate_lists[idx] else 0.0
+        best_single = infos[idx]["best_single"][1]
+        protection_score = infos[idx]["protection_score"]
+
+        if perfil == "conservador":
+            score = (best_single * 0.70) + (top_prob * 0.25) - (max(protection_score, 0) * 0.10)
+        else:
+            score = (best_single * 0.55) + (top_prob * 0.25) + (max(protection_score, 0) * 0.10)
+
+        scored.append((idx, score))
+
+    scored.sort(key=lambda x: x[1], reverse=True)
+
+    selected = list(fixed_indexes)
+    selected_set = set(selected)
+
+    strong_anchors = [
+        idx for idx, info in enumerate(infos)
+        if info["best_single"][1] >= ANCHOR_STRONG_THRESHOLD
+    ]
+    medium_anchors = [
+        idx for idx, info in enumerate(infos)
+        if ANCHOR_MEDIUM_THRESHOLD <= info["best_single"][1] < ANCHOR_STRONG_THRESHOLD
+    ]
+
+    for idx in strong_anchors + medium_anchors:
+        if idx not in selected_set and len(selected) < ticket_size:
+            selected.append(idx)
+            selected_set.add(idx)
+
+    for idx, _score in scored:
+        if idx in selected_set:
+            continue
+        selected.append(idx)
+        selected_set.add(idx)
+        if len(selected) >= ticket_size:
+            break
+
+    selected.sort()
+    return selected
+
+
+def slice_by_indexes(items, indexes):
+    return [items[i] for i in indexes]
+
+
+def combo_score(candidate_lists, idxs, perfil):
     score = 0.0
     for game_idx, cand_idx in enumerate(idxs):
         _opt, prob = candidate_lists[game_idx][cand_idx]
         score += math.log(max(prob, 1e-9))
+
+        if perfil == "diversificado":
+            score -= (cand_idx * 0.015)
+        else:
+            score -= (cand_idx * 0.05)
+
     return score
 
 
@@ -378,9 +497,9 @@ def combo_ticket(candidate_lists, idxs):
     return [candidate_lists[i][idxs[i]] for i in range(len(idxs))]
 
 
-def generate_unique_tickets(candidate_lists, qtd):
+def generate_unique_tickets(candidate_lists, qtd, perfil):
     base = tuple(0 for _ in candidate_lists)
-    heap = [(-combo_score(candidate_lists, base), base)]
+    heap = [(-combo_score(candidate_lists, base, perfil), base)]
     seen_states = {base}
     seen_signatures = set()
     tickets = []
@@ -403,7 +522,7 @@ def generate_unique_tickets(candidate_lists, qtd):
                     seen_states.add(nxt)
                     heapq.heappush(
                         heap,
-                        (-combo_score(candidate_lists, nxt), nxt),
+                        (-combo_score(candidate_lists, nxt, perfil), nxt),
                     )
 
     return tickets
@@ -439,6 +558,8 @@ def generate(
     qtd: int = Query(1, ge=1, le=10),
     modo: str = Query("misto"),
     tipo_dupla: str = Query("padrao"),
+    ticket_size: int = Query(10),
+    perfil: str = Query("conservador"),
 ):
     try:
         games = get_games()
@@ -456,6 +577,13 @@ def generate(
     if tipo_dupla not in {"padrao", "evitar_12"}:
         return {"erro": "tipo_dupla inválido. Use: padrao ou evitar_12."}
 
+    if ticket_size not in {7, 10}:
+        return {"erro": "ticket_size inválido. Use: 7 ou 10."}
+
+    perfil = perfil.lower().strip()
+    if perfil not in {"conservador", "diversificado"}:
+        return {"erro": "perfil inválido. Use: conservador ou diversificado."}
+
     results = simulate_results(games)
     infos = build_game_infos(results, tipo_dupla)
 
@@ -467,8 +595,27 @@ def generate(
         if f.jogo in valid_labels:
             fix_map[f.jogo] = f.escolha
 
-    candidate_lists, fixacoes_aplicadas = build_candidate_lists(games, infos, modo, fix_map)
-    tickets = generate_unique_tickets(candidate_lists, qtd)
+    candidate_lists_full, fixacoes_aplicadas_full = build_candidate_lists(games, infos, modo, fix_map, perfil)
+
+    try:
+        selected_indexes = choose_game_indexes_for_ticket_size(
+            games=games,
+            infos=infos,
+            candidate_lists=candidate_lists_full,
+            fix_map=fix_map,
+            ticket_size=ticket_size,
+            perfil=perfil,
+        )
+    except Exception as e:
+        return {"erro": str(e)}
+
+    selected_games = slice_by_indexes(games, selected_indexes)
+    selected_candidate_lists = slice_by_indexes(candidate_lists_full, selected_indexes)
+
+    selected_labels = {g["label"] for g in selected_games}
+    fixacoes_aplicadas = [f for f in fixacoes_aplicadas_full if f["jogo"] in selected_labels]
+
+    tickets = generate_unique_tickets(selected_candidate_lists, qtd, perfil)
 
     if len(tickets) < qtd:
         return {
@@ -484,9 +631,11 @@ def generate(
             {
                 "modo": modo,
                 "tipo_dupla": tipo_dupla,
+                "perfil": perfil,
+                "jogos_no_bilhete": ticket_size,
                 "duplas_usadas": count_double_markets(ticket),
                 "fixacoes_aplicadas": fixacoes_aplicadas,
-                "jogos": format_ticket(games, ticket),
+                "jogos": format_ticket(selected_games, ticket),
             }
         )
 
@@ -495,6 +644,8 @@ def generate(
         "qtd_gerada": len(bilhetes),
         "modo": modo,
         "tipo_dupla": tipo_dupla,
+        "perfil": perfil,
+        "ticket_size": ticket_size,
         "simulacoes": SIMULATIONS,
         "fixacoes_recebidas": len(fixacoes),
         "fixacoes_validas": len(fixacoes_aplicadas),
