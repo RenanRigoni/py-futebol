@@ -1,3 +1,5 @@
+aqui meu .py^:
+
 import os
 import requests
 import numpy as np
