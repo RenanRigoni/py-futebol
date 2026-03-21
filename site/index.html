@@ -219,6 +219,21 @@
       cursor: pointer;
     }
 
+    .betano-actions {
+      margin-top: 14px;
+      display: grid;
+      grid-template-columns: 1fr;
+      gap: 10px;
+    }
+
+    .betano-actions button {
+      background: #f97316;
+    }
+
+    .betano-actions button:hover {
+      background: #ea580c;
+    }
+
     .hidden {
       display: none;
     }
@@ -371,6 +386,237 @@
       return selected ? selected.value : "10";
     }
 
+    function normalizeName(text) {
+      return String(text || "")
+        .normalize("NFD")
+        .replace(/[\u0300-\u036f]/g, "")
+        .replace(/\s+/g, " ")
+        .trim()
+        .toLowerCase();
+    }
+
+    function mapTeamNameForBetano(name) {
+      const original = String(name || "").trim();
+
+      const mapping = {
+        "Bragantino-SP": "Bragantino",
+        "Botafogo": "Botafogo-RJ",
+        "Atletico Mineiro": "Atlético-MG",
+        "Atlético Mineiro": "Atlético-MG",
+        "Atletico-MG": "Atlético-MG",
+        "Sao Paulo": "São Paulo",
+        "Atletico Paranaense": "Athletico-PR",
+        "Atlético Paranaense": "Athletico-PR",
+        "Vitoria": "Vitória",
+        "Gremio": "Grêmio"
+      };
+
+      return mapping[original] || original;
+    }
+
+    function encodeTicketPayload(jogos) {
+      const json = JSON.stringify(jogos);
+      return btoa(unescape(encodeURIComponent(json)));
+    }
+
+    function decodeTicketPayload(encoded) {
+      return JSON.parse(decodeURIComponent(escape(atob(encoded))));
+    }
+
+    function buildBetanoScript(jogos) {
+      const jogosFormatados = jogos.map(j => {
+        const partes = String(j.jogo || "").split(" x ");
+        const home = mapTeamNameForBetano(partes[0] || "");
+        const away = mapTeamNameForBetano(partes[1] || "");
+
+        return {
+          home,
+          away,
+          pick: j.mercado
+        };
+      });
+
+      return `(async () => {
+  const CONFIG = {
+    DRY_RUN: false,
+    DEBUG: true,
+    DELAY_MS: 1400,
+    SCROLL: true
+  };
+
+  const BILHETE = ${JSON.stringify(jogosFormatados, null, 2)};
+
+  const usedContainers = new Set();
+
+  const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+
+  const norm = (s) =>
+    String(s || "")
+      .normalize("NFD")
+      .replace(/[\\u0300-\\u036f]/g, "")
+      .replace(/[–—]/g, "-")
+      .replace(/\\s+/g, " ")
+      .trim()
+      .toLowerCase();
+
+  const isVisible = (el) => {
+    if (!el) return false;
+    const rect = el.getBoundingClientRect();
+    const style = getComputedStyle(el);
+    return (
+      rect.width > 0 &&
+      rect.height > 0 &&
+      style.display !== "none" &&
+      style.visibility !== "hidden"
+    );
+  };
+
+  function getSelectionButtons(el) {
+    return Array.from(el.querySelectorAll('[data-qa="event-selection"]')).filter(isVisible);
+  }
+
+  function scoreContainer(el, homeN, awayN) {
+    const txt = norm(el.innerText || el.textContent || "");
+    if (!txt.includes(homeN) || !txt.includes(awayN)) return -1;
+
+    const buttons = getSelectionButtons(el);
+    if (buttons.length < 3 || buttons.length > 4) return -1;
+
+    const rect = el.getBoundingClientRect();
+    const area = rect.width * rect.height;
+
+    let score = 1000000 - area;
+
+    if (buttons.length === 3) score += 50000;
+
+    score += txt.includes(homeN) ? 5000 : 0;
+    score += txt.includes(awayN) ? 5000 : 0;
+
+    return score;
+  }
+
+  function findMatchContainer(home, away) {
+    const homeN = norm(home);
+    const awayN = norm(away);
+
+    const all = Array.from(document.querySelectorAll("div, article, section, li"));
+    let best = null;
+    let bestScore = -1;
+
+    for (const el of all) {
+      if (!isVisible(el)) continue;
+      if (usedContainers.has(el)) continue;
+
+      const score = scoreContainer(el, homeN, awayN);
+      if (score > bestScore) {
+        bestScore = score;
+        best = el;
+      }
+    }
+
+    if (CONFIG.DEBUG) {
+      console.log("[DEBUG] findMatchContainer", { home, away, bestScore, best });
+    }
+
+    return best;
+  }
+
+  function findPickButton(container, pick) {
+    const wanted = String(pick).trim().toUpperCase();
+    const buttons = getSelectionButtons(container);
+
+    for (const btn of buttons) {
+      const nameEl = btn.querySelector(".s-name");
+      const txt = (nameEl?.innerText || nameEl?.textContent || "").trim().toUpperCase();
+      const aria = (btn.getAttribute("aria-label") || "").toUpperCase();
+
+      if (txt === wanted) return btn;
+      if (aria.includes(\`BET ON \${wanted}\`)) return btn;
+    }
+
+    return null;
+  }
+
+  async function clickSafe(el) {
+    if (CONFIG.SCROLL) {
+      el.scrollIntoView({ behavior: "smooth", block: "center" });
+      await sleep(500);
+    }
+
+    if (CONFIG.DRY_RUN) {
+      console.log("[DRY_RUN] clicaria em:", el);
+      return;
+    }
+
+    el.dispatchEvent(new MouseEvent("mouseover", { bubbles: true }));
+    el.dispatchEvent(new MouseEvent("mousedown", { bubbles: true }));
+    el.dispatchEvent(new MouseEvent("mouseup", { bubbles: true }));
+    el.click();
+  }
+
+  const results = [];
+
+  for (const item of BILHETE) {
+    const { home, away, pick } = item;
+
+    console.log(\`\\n--- Procurando \${home} x \${away} | pick=\${pick} ---\`);
+
+    const container = findMatchContainer(home, away);
+
+    if (!container) {
+      console.warn("Jogo não encontrado:", item);
+      results.push({ ...item, ok: false, reason: "jogo não encontrado" });
+      continue;
+    }
+
+    usedContainers.add(container);
+
+    const buttons = getSelectionButtons(container);
+    if (CONFIG.DEBUG) {
+      console.log("[DEBUG] botões do container:", buttons);
+    }
+
+    const btn = findPickButton(container, pick);
+
+    if (!btn) {
+      console.warn("Botão não encontrado:", item);
+      results.push({ ...item, ok: false, reason: "botão não encontrado" });
+      continue;
+    }
+
+    console.log("Botão encontrado:", btn);
+    await clickSafe(btn);
+
+    results.push({ ...item, ok: true });
+    await sleep(CONFIG.DELAY_MS);
+  }
+
+  console.log("\\n===== RESUMO =====");
+  console.table(results);
+
+  const okCount = results.filter(r => r.ok).length;
+  console.log(\`Sucesso: \${okCount}/\${results.length}\`);
+
+  if (CONFIG.DRY_RUN) {
+    console.log("DRY_RUN está ligado. Para clicar de verdade, troque DRY_RUN para false.");
+  }
+})();`;
+    }
+
+    async function copiarScriptBetano(encodedTicket) {
+      try {
+        const jogos = decodeTicketPayload(encodedTicket);
+        const script = buildBetanoScript(jogos);
+
+        await navigator.clipboard.writeText(script);
+
+        hideError();
+        showSuccess("Script Betano copiado. Abra a Betano, vá ao Console e cole o script.");
+      } catch (error) {
+        showError(`Erro ao gerar script Betano: ${error.message}`);
+      }
+    }
+
     async function carregarJogos() {
       hideError();
       hideSuccess();
@@ -469,6 +715,20 @@
           </div>
         `).join("");
 
+        const betanoActionsHtml = bilhete.modo === "seco"
+          ? `
+            <div class="betano-actions">
+              <button
+                class="btn-betano-script"
+                data-ticket="${escapeHtml(encodeTicketPayload(bilhete.jogos))}"
+                type="button"
+              >
+                Gerar script Betano
+              </button>
+            </div>
+          `
+          : "";
+
         return `
           <div class="ticket">
             <div class="ticket-header">
@@ -484,6 +744,7 @@
             <div style="margin-top: 12px;">
               ${jogosHtml}
             </div>
+            ${betanoActionsHtml}
           </div>
         `;
       }).join("");
@@ -538,6 +799,16 @@
     }
 
     btnGerar.addEventListener("click", gerarBilhetes);
+
+    resultsContainer.addEventListener("click", async (event) => {
+      const btn = event.target.closest(".btn-betano-script");
+      if (!btn) return;
+
+      const encodedTicket = btn.getAttribute("data-ticket");
+      if (!encodedTicket) return;
+
+      await copiarScriptBetano(encodedTicket);
+    });
 
     carregarJogos();
   </script>
